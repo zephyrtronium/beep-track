@@ -3,7 +3,6 @@ package track
 
 import (
 	"errors"
-	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -39,9 +38,8 @@ const (
 	flagInit int32 = 1 << iota
 	// flagSet indicates that a call to Set is in progress.
 	flagSet
-	// flagErr indicates that the track entered an erroneous state, either from
-	// calling Set concurrently with or after Close or from the silence
-	// streamer failing to fill all required samples.
+	// flagErr indicates that the track entered an erroneous state because the
+	// silence streamer failed to fill a required number of samples.
 	flagErr
 )
 
@@ -132,11 +130,11 @@ func (t *Track) streamSilence(samples [][2]float64) (n int, ok bool) {
 		k, _ := t.silence.Stream(samples[:need])
 		if k < need {
 			// We may or may not be concurrent with a call to Set.
-			f := atomic.SwapInt32(&t.flags, flagErr|flagSet)
-			for !atomic.CompareAndSwapInt32(&t.flags, f, f&^flagSet|flagErr) {
-				f = atomic.SwapInt32(&t.flags, flagErr|flagSet)
+			f := atomic.SwapInt32(&t.flags, flagErr)
+			for !atomic.CompareAndSwapInt32(&t.flags, flagErr, f|flagErr) {
+				f = atomic.SwapInt32(&t.flags, flagErr)
 			}
-			panic(errors.New("track: not enough samples: need " + strconv.Itoa(need) + ", got " + strconv.Itoa(k)))
+			return n + k, n+k > 0
 		}
 		n += k
 		samples = samples[k:]
@@ -158,11 +156,16 @@ func (t *Track) Set(stream beep.Streamer) {
 	t.smu.Lock()
 	// t.Stream unlocks t.mu!
 	// The only flag that may be set is flagErr, so we can just add flagSet.
-	atomic.AddInt32(&t.flags, flagSet)
+	if f := atomic.AddInt32(&t.flags, flagSet); f&flagErr != 0 {
+		// The track is in an error state, which is effectively closed.
+		// However, we don't need to panic in this situation, because t.Err
+		// returns an error.
+		t.smu.Unlock()
+		return
+	}
 	if atomic.LoadInt32(&t.closed) != 0 {
-		// Unless this happens. We want to unlock the mutex before panicking so
+		// The track is closed. We want to unlock the mutex before panicking so
 		// that the program can continue if the panic is recovered.
-		atomic.StoreInt32(&t.flags, flagErr)
 		t.smu.Unlock()
 		panic(errors.New("track: Set on closed track"))
 	}
@@ -171,9 +174,15 @@ func (t *Track) Set(stream beep.Streamer) {
 	atomic.StoreInt32(&t.flags, atomic.LoadInt32(&t.flags)&^flagSet|flagInit)
 }
 
-// Err returns nil. It does not propagate errors from any active streamers.
+// Err returns an error if the silence streamer failed to provide enough
+// samples. The returned error is of type *SilenceError, and it wraps the
+// silence streamer's error, if any. It does not propagate errors from any
+// active streamers.
 func (t *Track) Err() error {
-	return nil
+	if atomic.LoadInt32(&t.flags)&flagErr == 0 {
+		return nil
+	}
+	return &SilenceError{err: t.silence.Err(), Silence: t.silence}
 }
 
 // Close stops streamer playback. If there is an active streamer and it
@@ -210,3 +219,21 @@ func (t *Track) closeActive() (err error) {
 }
 
 var _ beep.StreamCloser = (*Track)(nil)
+
+// SilenceError is the error returned by Track.Err if the track's silence
+// streamer fails to provide enough samples. It wraps the silence streamer's
+// error if there is one.
+type SilenceError struct {
+	// err is the silence streamer's error.
+	err error
+	// Silence is the track's silence streamer.
+	Silence beep.Streamer
+}
+
+func (err *SilenceError) Error() string {
+	msg := "with no error"
+	if err.err != nil {
+		msg = "with error " + err.err.Error()
+	}
+	return "silence streamer provided insufficient samples " + msg
+}

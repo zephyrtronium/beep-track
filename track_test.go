@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/faiface/beep"
-	"github.com/zephyrtronium/beep-track"
+	track "github.com/zephyrtronium/beep-track"
 )
 
 type someandstop struct {
@@ -246,4 +246,32 @@ func TestSetClose(t *testing.T) {
 		t.Error("error from close:", err)
 	}
 	s.Set(beep.Silence(1))
+}
+
+func TestSilenceFails(t *testing.T) {
+	s := track.New(beep.Silence(1), nil)
+	if err := s.Err(); err != nil {
+		t.Errorf("unexpected error %v before streaming samples", err)
+	}
+	r := make([][2]float64, 64)
+	n, ok := s.Stream(r)
+	if n != 1 {
+		t.Errorf("wrong number of samples: expected 1, got %d", n)
+	}
+	if !ok {
+		t.Error("expected stream to succeed")
+	}
+	if s.Err() == nil {
+		t.Error("expected error after first incomplete stream")
+	}
+	n, ok = s.Stream(r)
+	if n != 0 {
+		t.Errorf("wrong number of samples: expected 0, got %d", n)
+	}
+	if ok {
+		t.Error("expected stream to fail")
+	}
+	if s.Err() == nil {
+		t.Error("expected error")
+	}
 }
