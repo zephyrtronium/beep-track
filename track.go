@@ -121,7 +121,7 @@ func (t *Track) streamSilence(samples [][2]float64) (n int, ok bool) {
 			return n + k, n+k > 0
 		}
 		if atomic.LoadInt32(&t.closed) != 0 {
-			return n, true
+			return n, n > 0
 		}
 		need := len(samples)
 		if need > silenceMax {
