@@ -147,60 +147,67 @@ func TestStreamSet(t *testing.T) {
 }
 
 func TestStreamSetConcurrent(t *testing.T) {
-	a := &someandstop{l: 1, r: 0, n: 4095}
-	b := &someandstop{l: 0, r: 1, n: 4095}
-	ch := make(chan string)
 	s := track.New(nil, nil)
-	go func() {
-		r := make([][2]float64, 512)
-		var havea, donea, haveb, doneb bool
-		// signal to start setting
-		ch <- ""
-		for {
-			s.Stream(r)
-			for _, v := range r {
-				switch v {
-				case [2]float64{}:
-					if havea {
-						donea = true
-					}
-					if haveb {
-						doneb = true
-					}
-				case [2]float64{1, 0}:
-					if donea {
-						ch <- "got samples from a twice"
-						close(ch)
+	for i := 0; i < 1000; i++ {
+		a := &someandstop{l: 1, r: 0, n: 4095}
+		b := &someandstop{l: 0, r: 1, n: 4095}
+		ch := make(chan string)
+		go func() {
+			r := make([][2]float64, 512)
+			var havea, donea, haveb, doneb bool
+			// signal to start setting
+			ch <- ""
+			for {
+				n, _ := s.Stream(r)
+				if n != len(r) {
+					ch <- "wrong number of samples"
+					return
+				}
+				for _, v := range r {
+					switch v {
+					case [2]float64{}:
+						if havea {
+							donea = true
+						}
+						if haveb {
+							doneb = true
+						}
+					case [2]float64{1, 0}:
+						if donea {
+							ch <- "got samples from a twice"
+							return
+						}
+						if haveb && !doneb {
+							doneb = true
+						}
+						havea = true
+					case [2]float64{0, 1}:
+						if doneb {
+							ch <- "got samples from b twice"
+							return
+						}
+						if havea && !donea {
+							donea = true
+						}
+						haveb = true
+					default:
+						ch <- "got weird sample"
 						return
 					}
-					if haveb && !doneb {
-						doneb = true
-					}
-					havea = true
-				case [2]float64{0, 1}:
-					if doneb {
-						ch <- "got samples from b twice"
-						close(ch)
-						return
-					}
-					if havea && !donea {
-						donea = true
-					}
-					haveb = true
+				}
+				if donea && doneb {
+					close(ch)
+					return
 				}
 			}
-			if donea && doneb {
-				close(ch)
-				return
-			}
+		}()
+		<-ch
+		// TODO: these don't quit if the test fails
+		go s.Set(a)
+		go s.Set(b)
+		if m, ok := <-ch; ok {
+			t.Error(m)
 		}
-	}()
-	<-ch
-	// TODO: these don't quit if the test fails
-	go s.Set(a)
-	go s.Set(b)
-	if m, ok := <-ch; ok {
-		t.Error(m)
 	}
 }
 
@@ -273,5 +280,138 @@ func TestSilenceFails(t *testing.T) {
 	}
 	if s.Err() == nil {
 		t.Error("expected error")
+	}
+}
+
+func TestInterrupt(t *testing.T) {
+	a := &someandstop{l: 1, r: 1, n: 1}
+	s := track.New(nil, a)
+	if err := s.Interrupt(); err != nil {
+		t.Error("unexpected error from interrupt:", err)
+	}
+	if !a.closed {
+		t.Error("active streamer not closed by interrupt")
+	}
+	r := make([][2]float64, 64)
+	n, ok := s.Stream(r)
+	if !ok {
+		t.Error("expected stream to succeed")
+	}
+	if n != len(r) {
+		t.Errorf("wrong number of samples: expected %d, got %d", len(r), n)
+	}
+	for i, v := range r {
+		if v != [2]float64{} {
+			t.Errorf("wrong sample value at %d: expected [0 0], got %f", i, v)
+		}
+	}
+}
+
+func TestInterruptSilent(t *testing.T) {
+	s := track.New(nil, nil)
+	if err := s.Interrupt(); err != nil {
+		t.Error("unexpected error form interrupt:", err)
+	}
+	r := make([][2]float64, 64)
+	n, ok := s.Stream(r)
+	if !ok {
+		t.Error("expected stream to succeed")
+	}
+	if n != len(r) {
+		t.Errorf("wrong number of samples: expected %d, got %d", len(r), n)
+	}
+	for i, v := range r {
+		if v != [2]float64{} {
+			t.Errorf("wrong sample value at %d: expected [0 0], got %f", i, v)
+		}
+	}
+}
+
+func TestInterruptConcurrent(t *testing.T) {
+	s := track.New(nil, nil)
+	for i := 0; i < 1000; i++ {
+		a := &someandstop{l: 1, r: 0, n: 1 << 30}
+		b := &someandstop{l: 0, r: 1, n: 1 << 30}
+		ch := make(chan string)
+		intr := make(chan bool)
+		go func() {
+			r := make([][2]float64, 64)
+			var havea, haveb, donea, doneb bool
+			// signal to start interrupting
+			ch <- ""
+			for {
+				n, _ := s.Stream(r)
+				if n != len(r) {
+					ch <- "wrong number of samples"
+					return
+				}
+				for _, v := range r {
+					switch v {
+					case [2]float64{}:
+						if havea {
+							donea = true
+						}
+						if haveb {
+							doneb = true
+						}
+					case [2]float64{1, 0}:
+						if donea {
+							ch <- "got samples from a twice"
+							return
+						}
+						if haveb && !doneb {
+							doneb = true
+						}
+						if !havea {
+							intr <- true
+						}
+						havea = true
+					case [2]float64{0, 1}:
+						if doneb {
+							ch <- "got samples from b twice"
+							return
+						}
+						if havea && !donea {
+							donea = true
+						}
+						if !haveb {
+							intr <- true
+						}
+						haveb = true
+					default:
+						ch <- "got weird sample"
+						return
+					}
+				}
+				if donea && doneb {
+					close(ch)
+					return
+				}
+			}
+		}()
+		<-ch
+		w := make(chan bool, 1)
+		go func() {
+			<-w
+			s.Set(a)
+		}()
+		go func() {
+			<-w
+			s.Set(b)
+		}()
+		go func() {
+			<-intr
+			s.Interrupt()
+			w <- true
+		}()
+		go func() {
+			<-intr
+			s.Interrupt()
+			w <- true
+		}()
+		w <- true
+		if m, ok := <-ch; ok {
+			t.Fatal(m)
+		}
 	}
 }

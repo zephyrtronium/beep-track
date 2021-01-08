@@ -86,7 +86,8 @@ func (t *Track) Stream(samples [][2]float64) (int, bool) {
 		// smu was unlocked by Close.
 		return 0, false
 	}
-	if f&flagInit == 0 {
+	// Reload flags in case Interrupt just finished.
+	if atomic.LoadInt32(&t.flags)&flagInit == 0 {
 		// No active streamer. smu was unlocked by a previous call to Stream.
 		t.cmu.Unlock()
 		return t.streamSilence(samples)
@@ -97,10 +98,8 @@ func (t *Track) Stream(samples [][2]float64) (int, bool) {
 		// to new setters.
 		t.closeActive()
 		// We're really unsetting flagInit, but if we're reaching this point,
-		// then it's the only set flag. Also, there are no concurrent writers
-		// to t.flags because we still hold the mutex, so we don't need to
-		// store atomically.
-		t.flags = 0
+		// then it's the only set flag.
+		atomic.StoreInt32(&t.flags, 0)
 		// smu was locked by Set.
 		t.smu.Unlock()
 		t.cmu.Unlock()
@@ -155,23 +154,31 @@ const silenceMax = 32
 func (t *Track) Set(stream beep.Streamer) {
 	t.smu.Lock()
 	// t.Stream unlocks t.mu!
-	// The only flag that may be set is flagErr, so we can just add flagSet.
-	if f := atomic.AddInt32(&t.flags, flagSet); f&flagErr != 0 {
-		// The track is in an error state, which is effectively closed.
-		// However, we don't need to panic in this situation, because t.Err
-		// returns an error.
+	f := atomic.LoadInt32(&t.flags)
+	// Wait for any call to Interrupt to complete.
+	for !atomic.CompareAndSwapInt32(&t.flags, f&^flagSet, f|flagSet) {
+		f = atomic.LoadInt32(&t.flags)
+	}
+	if f&flagErr != 0 {
+		// The track is in an error state. Unlock and unset flagSet so any
+		// waiting setters can proceed.
+		atomic.AddInt32(&t.flags, -flagSet)
 		t.smu.Unlock()
 		return
 	}
 	if atomic.LoadInt32(&t.closed) != 0 {
 		// The track is closed. We want to unlock the mutex before panicking so
 		// that the program can continue if the panic is recovered.
+		atomic.AddInt32(&t.flags, -flagSet)
 		t.smu.Unlock()
 		panic(errors.New("track: Set on closed track"))
 	}
 	t.active = stream
-	// Reload flags in case streamSilence set flagErr.
-	atomic.StoreInt32(&t.flags, atomic.LoadInt32(&t.flags)&^flagSet|flagInit)
+	// flagInit is the least significant bit, and flagSet is the bit following
+	// it. We know that flagSet is set and flagInit is unset. So, subtracting
+	// 1 sets flagInit and unsets flagSet, without possibly changing any other
+	// bits.
+	atomic.AddInt32(&t.flags, -1)
 }
 
 // Err returns an error if the silence streamer failed to provide enough
@@ -207,6 +214,27 @@ func (t *Track) Close() error {
 		t.smu.Unlock()
 	}
 	return t.closeActive()
+}
+
+// Interrupt stops the currently playing active streamer, if any. If the active
+// streamer implements beep.StreamCloser, this additionally closes it. It is
+// safe to call this concurrently with Stream and Set. The returned error is
+// the error from closing the active streamer, if any.
+func (t *Track) Interrupt() error {
+	f := atomic.LoadInt32(&t.flags)
+	// Wait for any concurrent call to Set (or Interrupt) to complete.
+	for !atomic.CompareAndSwapInt32(&t.flags, f&^flagSet, f|flagSet) {
+		f = atomic.LoadInt32(&t.flags)
+	}
+	t.cmu.Lock()
+	err := t.closeActive()
+	if f := atomic.LoadInt32(&t.flags); f&flagInit != 0 {
+		atomic.AddInt32(&t.flags, -flagInit)
+		t.smu.Unlock()
+	}
+	atomic.AddInt32(&t.flags, -flagSet)
+	t.cmu.Unlock()
+	return err
 }
 
 // closeActive closes the active streamer if it can be closed.
