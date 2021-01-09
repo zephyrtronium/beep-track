@@ -211,6 +211,21 @@ func TestStreamSetConcurrent(t *testing.T) {
 	}
 }
 
+func TestStreamSetNil(t *testing.T) {
+	s := track.New(nil, nil)
+	s.Set(nil)
+	s.Set(beep.Silence(1))
+	r := make([][2]float64, 64)
+	n, ok := s.Stream(r)
+	if n != len(r) {
+		t.Errorf("wrong number of samples: expected %d, got %d", len(r), n)
+	}
+	if !ok {
+		t.Error("stream read not ok")
+	}
+	s.Set(nil)
+}
+
 func TestCloseSilence(t *testing.T) {
 	s := track.New(nil, nil)
 	r := make([][2]float64, 64)

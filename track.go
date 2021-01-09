@@ -149,6 +149,10 @@ const silenceMax = 32
 // another streamer, this blocks until that streamer has finished. Panics if
 // t is closed.
 //
+// If stream is nil, Set performs all its normal blocking, but does not
+// actually set a streamer. This allows callers to join on the completion of
+// the current active streamer.
+//
 // It is safe for any number of goroutines to call Set and for there to be at
 // most one goroutine calling Stream concurrently.
 func (t *Track) Set(stream beep.Streamer) {
@@ -173,12 +177,17 @@ func (t *Track) Set(stream beep.Streamer) {
 		t.smu.Unlock()
 		panic(errors.New("track: Set on closed track"))
 	}
-	t.active = stream
-	// flagInit is the least significant bit, and flagSet is the bit following
-	// it. We know that flagSet is set and flagInit is unset. So, subtracting
-	// 1 sets flagInit and unsets flagSet, without possibly changing any other
-	// bits.
-	atomic.AddInt32(&t.flags, -1)
+	if stream != nil {
+		t.active = stream
+		// flagInit is the least significant bit, and flagSet is the bit
+		// following it. We know that flagSet is set and flagInit is unset. So,
+		// subtracting 1 sets flagInit and unsets flagSet, without possibly
+		// changing any other bits.
+		atomic.AddInt32(&t.flags, -1)
+	} else {
+		atomic.AddInt32(&t.flags, -flagSet)
+		t.smu.Unlock()
+	}
 }
 
 // Err returns an error if the silence streamer failed to provide enough
