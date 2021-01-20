@@ -274,3 +274,9 @@ func (err *SilenceError) Error() string {
 	}
 	return "silence streamer provided insufficient samples " + msg
 }
+
+// Unwrap returns the wrapped error which was returned by the track's silence
+// streamer after it closed.
+func (err *SilenceError) Unwrap() error {
+	return err.err
+}
