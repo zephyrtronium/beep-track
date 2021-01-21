@@ -60,6 +60,23 @@ func TestStreamDefaults(t *testing.T) {
 	}
 }
 
+func TestStreamZero(t *testing.T) {
+	var s track.Track
+	r := make([][2]float64, 64)
+	n, ok := s.Stream(r)
+	if n != len(r) {
+		t.Errorf("wrong number of samples: want %d, got %d", len(r), n)
+	}
+	if !ok {
+		t.Errorf("stream read not ok")
+	}
+	for i, v := range r {
+		if v != [2]float64{} {
+			t.Errorf("wrong sample at %d: want [0 0], got %f", i, v)
+		}
+	}
+}
+
 func TestStreamStart(t *testing.T) {
 	a := &someandstop{l: 1, r: 1, n: 1}
 	s := track.New(&someandstop{l: -1, r: -1, n: 1 << 30}, a)
@@ -139,6 +156,31 @@ func TestStreamSet(t *testing.T) {
 	for i := 1; i < len(r); i++ {
 		if r[i] != [2]float64{-1, -1} {
 			t.Errorf("wrong non-first sample after set at %d: want [-1 -1], got %f", i, r[i])
+		}
+	}
+	if !a.closed {
+		t.Errorf("active streamer not closed")
+	}
+}
+
+func TestStreamSetZero(t *testing.T) {
+	a := &someandstop{l: 1, r: 1, n: 1}
+	var s track.Track
+	r := make([][2]float64, 64)
+	s.Set(a)
+	n, ok := s.Stream(r)
+	if n != len(r) {
+		t.Errorf("wrong number of samples: want %d, got %d", len(r), n)
+	}
+	if !ok {
+		t.Errorf("stream read not ok")
+	}
+	if r[0] != [2]float64{1, 1} {
+		t.Errorf("wrong first sample: want [1 1], got %f", r[0])
+	}
+	for i := 1; i < len(r); i++ {
+		if r[i] != [2]float64{} {
+			t.Errorf("wrong non-first sample at %d: want [-1 -1], got %f", i, r[i])
 		}
 	}
 	if !a.closed {

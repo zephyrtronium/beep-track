@@ -13,7 +13,7 @@ import (
 // streamer and a settable active streamer to provide a constantly playing
 // stream.
 //
-// The zero value of Track is an invalid state.
+// The zero value of Track defaults to beep.Silence as its silence streamer.
 type Track struct {
 	// flags holds flags regarding the status of the active streamer.
 	flags int32
@@ -113,6 +113,9 @@ func (t *Track) Stream(samples [][2]float64) (int, bool) {
 // streamSilence streams samples from the track's silence streamer and panics
 // if it fails to provide enough samples.
 func (t *Track) streamSilence(samples [][2]float64) (n int, ok bool) {
+	if t.silence == nil {
+		t.silence = beep.Silence(-1)
+	}
 	for len(samples) > 0 {
 		if f := atomic.LoadInt32(&t.flags); f&(flagInit|flagSet) != 0 {
 			// Someone is setting or has set a new active streamer.
@@ -156,8 +159,7 @@ const silenceMax = 32
 // It is safe for any number of goroutines to call Set and for there to be at
 // most one goroutine calling Stream concurrently.
 func (t *Track) Set(stream beep.Streamer) {
-	t.smu.Lock()
-	// t.Stream unlocks t.mu!
+	t.smu.Lock() // t.Stream unlocks t.smu!
 	f := atomic.LoadInt32(&t.flags)
 	// Wait for any call to Interrupt to complete.
 	for !atomic.CompareAndSwapInt32(&t.flags, f&^flagSet, f|flagSet) {
